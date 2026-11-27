@@ -29,6 +29,11 @@ from pathlib import Path
 # 项目根 = llm_zero_shot/ 的上一级（母版/副本都成立）
 ROOT           = Path(__file__).resolve().parent.parent
 DATA_DIR       = ROOT / "data" / "processed"
+# 交付包不带全量 processed：自动退回 data/sample
+if not DATA_DIR.exists():
+    _sample_dir = ROOT.parent / "data" / "sample"
+    if _sample_dir.exists():
+        DATA_DIR = _sample_dir
 OUTPUT_LLM_DIR = ROOT / "outputs" / "llm"
 
 SCHEMA_PATH       = DATA_DIR / "event_schema.json"

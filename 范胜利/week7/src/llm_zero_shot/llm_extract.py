@@ -67,7 +67,7 @@ sys.path.insert(0, str(ROOT / "llm_lora"))
 
 from log_utils import EvalLogger  # noqa: E402
 from event_data import (  # noqa: E402
-    OUTPUT_LLM_DIR, ROOT, SEED, canonical_order, load_schema, load_split,
+    DATA_DIR, OUTPUT_LLM_DIR, ROOT, SEED, canonical_order, load_schema, load_split,
     make_pred_row, sample_rows, uid, write_eval_ids, write_gold_subset,
 )
 from event_prompt import (  # noqa: E402
@@ -279,6 +279,7 @@ def parse_args():
     p.add_argument("--n", default=200, type=int, help="评测样本数（默认 200）")
     p.add_argument("--seed", default=SEED, type=int)
     p.add_argument("--data", default=None, help="金标 JSONL（默认 data/processed/dev_extract.jsonl）")
+    p.add_argument("--schema", default="", help="event_schema.json；默认从 --data 同目录或 data/sample 自动找")
     p.add_argument("--tag", default="", help="输出文件后缀，默认 {backend}_{mode}_n{n}")
     p.add_argument("--out", default="", help="预测输出路径，默认 outputs/llm/pred_{tag}.jsonl")
     p.add_argument("--model", default=os.getenv("LLM_MODEL", DEFAULT_MODEL))
@@ -312,7 +313,23 @@ def main():
     if args.dry_run or args.backend == "mock":
         args.backend = "mock"
 
-    SCHEMA = load_schema()
+    # schema 解析优先级（交付包没有 data/processed，必须能自动找到）：
+    #   1) 显式 --schema；
+    #   2) --data 同目录的 event_schema.json（最常用：--data ../data/sample/dev_extract.jsonl）；
+    #   3) 从 src/ 和 week7/ 两个根找 data/sample/event_schema.json。
+    # 注意 SCHEMA 是全局变量，prompt 构造与解析器都依赖它。
+    schema_path = Path(args.schema) if args.schema else None
+    if schema_path is None and args.data:
+        cand = Path(args.data).parent / "event_schema.json"
+        if cand.exists():
+            schema_path = cand
+    if schema_path is None:
+        for base in (ROOT, ROOT.parent):
+            cand = base / "data" / "sample" / "event_schema.json"
+            if cand.exists():
+                schema_path = cand
+                break
+    SCHEMA = load_schema(schema_path)
 
     if args.print_prompt:
         print(build_system_prompt(SCHEMA))
@@ -321,9 +338,11 @@ def main():
     tag = args.tag or f"{args.backend}_{args.mode}_n{args.n}"
     OUTPUT_LLM_DIR.mkdir(parents=True, exist_ok=True)
 
-    gold_path_in = Path(args.data) if args.data else (ROOT / "data" / "processed" / "dev_extract.jsonl")
+    # 金标来源：显式 --data 优先；否则用 common DATA_DIR（缺省 processed，缺失时回退 sample）。
+    gold_path_in = Path(args.data) if args.data else (DATA_DIR / "dev_extract.jsonl")
     all_rows = [json.loads(line) for line in open(gold_path_in, encoding="utf-8") if line.strip()]
-    rows = sample_rows(all_rows, args.n, args.seed)     # 固定 seed + 全项目统一口径
+    # sample_rows 固定 seed + canonical_order，保证不同方法拿到的是同一批 n 条（nested 子集）。
+    rows = sample_rows(all_rows, args.n, args.seed)
 
     # 评测集三件套：样本 id 列表、金标子集、预测文件
     eval_ids_path = OUTPUT_LLM_DIR / "eval_ids.json"
@@ -363,6 +382,10 @@ def main():
         print(f"[api] base_url={base_url} model={args.model} "
               f"max_tokens={args.max_tokens} few_shot={args.mode == 'few'}")
     elif args.backend == "local":
+        # 本地离线后端：Qwen3-0.6B + transformers AutoModelForCausalLM。
+        # - 有 CUDA 用 bf16；纯 CPU 只能 fp32（Qwen 权重原生 bf16，CPU 会转 fp32，慢但能跑）。
+        # - 不联网下载：model_path 不存在就由 resolve_model_path 给出人话报错。
+        # - CPU 上 0.6B 约 28 s/句，n=60 约 28 分钟；GPU 上约 5 s/句。
         import torch
         from model_paths import QWEN_MODEL_DIR, resolve_model_path
         check_gpu_idle()

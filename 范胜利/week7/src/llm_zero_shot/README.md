@@ -1,3 +1,10 @@
+> **本文档主题：** 本地 Qwen/API 的 zero/few-shot 提示、运行与评测说明
+
+> **初学者导读：** 先读 IMPLEMENTATION 第 10 节（LLM zero/few-shot），再回来查后端。
+> **怎么用：** 重点看 prompt、JSON 解析、本地/API 区别。
+> **对应章节：** 初学者教程第 9 章「LLM/LoRA」
+> **文档级别：** 🔍 查阅
+
 # llm_zero_shot/ —— LLM 链路的公共层 + zero/few-shot 抽取
 
 **一句话**：把生成式（LLM）链路的**公共部分**放这里 —— prompt 构造、输出解析、本地批量生成、数据工具，

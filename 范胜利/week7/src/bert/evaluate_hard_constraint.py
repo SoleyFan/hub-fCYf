@@ -50,6 +50,7 @@ def main():
     ap.add_argument("--run_name", default="bert_crf_256_hard")
     ap.add_argument("--soft_json", default="bert_crf_256",
                     help="软约束那一组的结果名，用于自动生成对照说明")
+    ap.add_argument("--data_dir", default="", help="数据目录；留空=自动用 data/processed，缺失时退回 data/sample")
     ap.add_argument("--device", default="")
     args = ap.parse_args()
 
@@ -100,10 +101,13 @@ def main():
         raise RuntimeError("硬约束没有生效（禁止 0 个转移对），结果会和软约束完全一样，"
                            "请检查 constraint buffer 是否被 load_state_dict 覆盖")
 
-    data_dir = DATA_DIR
+    # 数据目录：显式参数 > common.DATA_DIR（processed 缺失时已回退 sample）。
+    # 这里只换解码约束、不重训，所以必须用和 checkpoint 完全一致的 dev 数据，
+    # 否则“软约束 vs 硬约束”的差值就混进了数据差异。
+    data_dir = Path(args.data_dir) if args.data_dir else DATA_DIR
     tokenizer = BertTokenizerFast.from_pretrained(a.bert_path)
     dev_rows = load_extract_split("dev", data_dir)
-    enums = load_enums()
+    enums = load_enums(data_dir / "event_schema.json")
     dev_ds = BioDataset(dev_rows, tokenizer, label_scheme, train_args.get("max_len", 256))
     dev_loader = DataLoader(dev_ds, batch_size=32, shuffle=False, num_workers=0,
                             collate_fn=collate_bio)

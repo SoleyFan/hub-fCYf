@@ -3,9 +3,11 @@
 在「本次提供的 sample 数据」上，用同一套评测口径重算所有方法的指标。
 
 两种来源分开标注，绝不混为一谈：
-  A. 本次本地重训（outputs/disc/pred_*.jsonl）—— 在 sample 上真正训练/推理；
-  B. 已保存的参考预测（reference/...）—— 全量数据上训练好的模型输出，
-     这里只把它投影到 sample 的同一批句子上重新评分，用于和 PPT 主表对得上。
+  A. 本次本地重训（`outputs/predictions/local/`，或新训练产生的 `src/outputs/disc/`）
+     —— 在 sample 上真正训练/推理；
+  B. 已保存的参考预测（`outputs/predictions/disc/`、`outputs/predictions/llm/`）
+     —— 全量数据上训练好的模型输出，这里只把它投影到 sample 的同一批句子上重新评分，
+     用于和 PPT 主表对得上。
 
 统一子集：
   LLM 链路只评测固定 n=200 抽样（outputs/llm/eval_ids.json / gold_n200.jsonl），
@@ -17,7 +19,11 @@
   python eval/score_subset.py --all_dev            # 不投影，直接在 sample dev 300 上评
 产物：
   outputs/metrics/sample_subset/<name>.json
-  outputs/sample_subset.csv / outputs/sample_subset.md
+  outputs/sample_subset.csv（不再写 .md；学习/结果类 md 统一放桌面合集）
+
+对齐规则（本项目最容易错的地方）：
+  DuEE-Fin 的 `id` 是**公告 id**，一篇公告的多句会共用同一个 id；评测键必须是
+  `id + sent_id`。如果只按 id 对齐，后一句会覆盖前一句，gold-vs-gold 都只有 0.93。
 """
 
 import argparse
@@ -63,6 +69,7 @@ LOCAL = [
 
 
 def load_jsonl(path):
+    """读 JSONL；空行跳过，保留原始顺序。"""
     rows = []
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
@@ -73,6 +80,7 @@ def load_jsonl(path):
 
 
 def key(row):
+    """统一评测键：优先 id|sent_id；没有 sent_id 的旧数据才退化为 id。"""
     return f'{row.get("id", "")}|{row.get("sent_id", "")}' if row.get("sent_id") else str(row.get("id"))
 
 
@@ -84,6 +92,8 @@ def main():
     ap.add_argument("--all_dev", action="store_true", help="不投影，评 sample dev 全部 300 句")
     args = ap.parse_args()
 
+    # gold_all 是 sample dev 300；默认再用 LLM 的固定 n=200 抽样做交集，
+    # 保证规则/BiLSTM/BERT/两段式/LLM 在同一批句子上比较。
     gold_all = load_jsonl(Path(args.gold))
     if args.all_dev:
         gold = gold_all
@@ -100,6 +110,18 @@ def main():
     rows = []
 
     def add(name, display, pred_path, source):
+        """评测一个预测文件，并把一行结果追加到 `rows`。
+
+        参数：
+          name/display：机器名与展示名；
+          pred_path：预测 JSONL，必须带 id+sent_id；
+          source：`reference`（全量模型复评）或 `local_sample`（本次 sample 重训）。
+
+        为什么要做“覆盖率回退”：
+          LLM 的本地 0.6B 只跑了 n=60，而统一子集是 200 句。如果直接把缺的 140 句
+          当“全漏”，n=60 的 F1 会被虚假拉低。因此覆盖率 <80% 时，只在该方法
+          实际覆盖的句子上评，并在结果里保留真实 n。
+        """
         if not pred_path.exists():
             return
         preds = load_jsonl(pred_path)
@@ -150,7 +172,12 @@ def main():
         w.writerows(rows)
 
     # markdown
-    L = [f"# 同口径对比（{subset}，n={len(gold)}）\n",
+    L = [f"> **本文档主题：** 10 种方法在 {subset} 上的同口径复评结果（n={len(gold)}）\n",
+         "> **初学者导读：** 这是结果表，不用逐行读；先看方法名、n、论元 F1、事件 F1 四列。\n"
+         "> **怎么用：** 选型看论元/事件 F1；写报告直接引用这张表；n=60 的行不能和 n=200 的行直接比。\n"
+         "> **对应章节：** 初学者教程第 4 章「评测」\n"
+         "> **文档级别：** 📊 结果",
+         f"# 同口径对比（{subset}，n={len(gold)}）\n",
          "| 方法 | 来源 | n | 触发词 F1 | 论元 F1 | 事件级 F1 | 类型 macro F1 |",
          "|---|---|---:|---:|---:|---:|---:|"]
     for r in rows:
@@ -158,7 +185,8 @@ def main():
         L.append(f"| {r['display_name']} | {src} | {r['n']} | {r['trigger_f1']:.4f} | "
                  f"{r['argument_f1']:.4f} | {r['event_f1']:.4f} | "
                  f"{(r['type_macro_f1'] or 0):.4f} |")
-    (OUT / "sample_subset.md").write_text("\n".join(L) + "\n", encoding="utf-8")
+    # 不写 .md：结果类 Markdown 统一放在桌面 week7_学习文档合集.md，不进 GitHub。
+    # 终端仍打印同一张表，CSV 仍是机器可读的权威结果。
 
     print("\n".join(L))
     print(f"\n已写入 {csv_path}")

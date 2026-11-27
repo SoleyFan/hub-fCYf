@@ -48,8 +48,15 @@ def load_causal_lm(model_path: str, device: torch.device,
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
     tokenizer.padding_side = "left"     # ← 生成必须左 padding（见模块头部第 1 条）
-    model = AutoModelForCausalLM.from_pretrained(
-        model_path, dtype=dtype, trust_remote_code=True)
+    try:
+        # transformers 5.x 用 dtype=；4.5x 只认 torch_dtype=，这里做兼容。
+        # 这是本机实测踩到的坑：4.55 传 dtype= 会变成 Qwen3ForCausalLM.__init__()
+        # 的未知关键字，直接 TypeError；不是模型权重问题。
+        model = AutoModelForCausalLM.from_pretrained(
+            model_path, dtype=dtype, trust_remote_code=True)
+    except TypeError:
+        model = AutoModelForCausalLM.from_pretrained(
+            model_path, torch_dtype=dtype, trust_remote_code=True)
     model = model.to(device).eval()
     return model, tokenizer
 
@@ -79,6 +86,8 @@ def generate_batch(model, tokenizer, messages_list, device,
         prompts = batch_messages(tokenizer, chunk)
         enc = tokenizer(prompts, return_tensors="pt", padding=True,
                         add_special_tokens=False, truncation=False)
+        # 左 padding 后，input_ids 的最后一列才是“真实的下一个 token”位置；
+        # 如果补在右边，generate 会从 pad 开始续写，输出全是垃圾。
         input_ids = enc["input_ids"].to(device)
         attention_mask = enc["attention_mask"].to(device)
 

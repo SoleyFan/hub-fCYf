@@ -1,3 +1,12 @@
+> **本文档主题：** week7 交付总说明：任务、目录、数据、结果、复现命令与交付清单
+
+> **初学者导读：** 先读第 0/2/3 节（任务、数据、结果），命令在第 5 节，其余当索引。
+> **怎么用：** 不要从头背目录；先知道“有什么”，再按需点开。
+> **对应章节：** 初学者教程第 1 章「任务与抽取/分类」
+> **文档级别：** ⭐ 必读
+
+> **学习文档：** 所有学习/分析类 Markdown 已合并到 `八斗学院/八斗精品班/第七周 抽取任务/week7_学习文档合集.md`（不在 Git 仓库内）；本 README 只讲交付与运行。
+
 # week7 信息抽取（事件抽取）任务交付
 
 > 任务：给定一句金融公告，抽出**事件类型 + 触发词 span + 若干「角色 → 论元 span」**。
@@ -17,8 +26,7 @@
 | 数据 | 7 个文件全部可用；span 100% 可还原；长尾/截断/少量重复需写进假设 |
 
 **完整分析见 [`report/week7_信息抽取实验报告.docx`](report/week7_信息抽取实验报告.docx)，
-数据体检见 [`report/data_audit.md`](report/data_audit.md)，选型指南见
-[`report/model_selection.md`](report/model_selection.md)。**
+数据体检机器可读结果见 `outputs/data_audit.json`，选型依据见实验报告第 5 章。**
 
 ---
 
@@ -48,17 +56,14 @@ week7/
 ├── reference/                已保存的全量指标、gold、历史配置（预测见 outputs/predictions/）
 ├── outputs/
 │   ├── sample_subset.csv     ★ 10 种方法在 sample n=200 上的同批结果
-│   ├── sample_subset.md
 │   ├── predictions/          所有预测 JSONL（disc/llm/local）
 │   ├── local_run/            本地重训指标、日志、BiLSTM 权重
 │   ├── data_audit.json       数据体检（机器可读）
 │   ├── metrics/sample_subset/ 每种方法在 n=200 上的完整指标 JSON
-│   ├── f1_changes.csv/md     F1 变化与逐步归因
+│   ├── f1_changes.csv        F1 变化与逐步归因
 │   └── figures/              报告用 7 张图
 ├── report/
 │   ├── week7_信息抽取实验报告.docx   ★ 主报告
-│   ├── data_audit.md                数据体检（人读）
-│   ├── model_selection.md           模型 × 场景选型
 │   └── build_report.py              报告生成脚本
 ├── scripts/run_all.sh        一键复现（sample）
 └── README.md
@@ -78,7 +83,7 @@ week7/
 | `event_schema.json` | - | 构标签（13 类 / 92 槽 / 61 角色） | ✅ 必需 |
 | `sample_stats.json` | - | 抽样来源/seed/规模 | ⚠ 元数据 |
 
-**体检结论（详细见 `report/data_audit.md`）：**
+**体检结论（详细数据见 `outputs/data_audit.json`）：**
 
 - ✅ span 全部能在原文精确还原；类型/角色 100% 在 schema 内；无空触发词。
 - ✅ `sample_stats.json` 声明的规模与实际行数完全一致。
@@ -114,7 +119,7 @@ week7/
 ### 3.2 本次 sample 同批复评（n=200）
 
 LLM 的固定 200 条抽样全部落在 sample dev 内，因此把 10 种方法的已保存预测都投影到这
-200 句上重评，得到严格同批结果。**完整表见 [`outputs/sample_subset.md`](outputs/sample_subset.md)**，
+200 句上重评，得到严格同批结果。**完整表见 `outputs/sample_subset.csv`**，
 与项目原始 n200 指标逐位一致。
 
 ![sample n=200 对比](outputs/figures/fig_compare_sample.png)
@@ -168,7 +173,7 @@ LLM 的固定 200 条抽样全部落在 sample dev 内，因此把 10 种方法�
 
 **本任务最终建议：** 离线追精度用 LoRA SFT；在线要合法结构化用 CRF+硬约束；
 延迟敏感用 Linear/规则；新类型冷启动先 API zero-shot 出标注建议，人工改几百条、扩到千级后再转 LoRA。
-详见 [`report/model_selection.md`](report/model_selection.md)。
+详见实验报告第 5 章「模型 × 场景选型」。
 
 ---
 
@@ -183,6 +188,8 @@ BERT 权重在本机的位置：
 ```bash
 export BERT_PATH="/Users/fvictory/Desktop/八斗学院/八斗精品班/第四周 语言模型/bert-base-chinese"
 export PYTHON=/opt/anaconda3/envs/py312/bin/python
+# 本地 LLM 实际权重（在“第七周 抽取任务”目录；Desktop/pretrain_models 是指向它的软链接）
+export QWEN_PATH="/Users/fvictory/Desktop/八斗学院/八斗精品班/第七周 抽取任务/pretrain_models/Qwen3-0.6B"
 ```
 
 ```bash
@@ -215,8 +222,14 @@ cd src
 "$PYTHON" bert_pipeline/train.py --data_dir ../data/sample --device cuda \
   --bert_path "$BERT_PATH" --cls_epochs 2 --arg_epochs 3
 
-# L3/L4 LLM：LoRA SFT（需要本地 Qwen3-0.6B，8GB 卡；本机没有权重，未跑）
-"$PYTHON" llm_lora/train_sft.py --model_path /path/to/Qwen3-0.6B \
+# L3 本地 Qwen3-0.6B zero-shot（CPU 约 16 s/句；n=60 约 16 分钟）
+"$PYTHON" llm_zero_shot/llm_extract.py --backend local --mode zero \
+  --n 60 --data ../data/sample/dev_extract.jsonl \
+  --model_path "$QWEN_PATH" --gen_batch 1 --dtype fp32 \
+  --tag local_zero_n60_cpu
+
+# L4 LoRA SFT（需要本地 Qwen3-0.6B + 8GB 卡）
+"$PYTHON" llm_lora/train_sft.py --model_path "$QWEN_PATH" \
   --data_dir ../data/sample --epochs 1 --num_train 3500 --batch_size 2 --grad_accum 8
 
 # 3) 复评 + 图（读取 outputs/predictions/ 与 outputs/local_run/）
@@ -278,7 +291,10 @@ src/outputs/logs/<run_name>_train.json    逐 epoch loss / 内层验证 F1
 2. **BERT+CRF / 两段式 / LoRA 未在 sample 上重训**：CPU 上 CRF 单步成本约为 Linear 的 3~5 倍，
    LoRA 需要 Qwen3-0.6B 权重与 GPU；这些行使用项目已保存的全量预测复评，并在表中标注
    “已保存参考预测”。
-3. **LLM 未重跑**：本机没有 API Key / 本地 Qwen3-0.6B 权重；使用 `outputs/predictions/llm/` 的已保存预测。
+3. **LLM 参考预测 vs 本地重跑**：Qwen3-0.6B 已下载到 `../pretrain_models/Qwen3-0.6B`，可本地跑；
+   报告表里的 n=60 仍是之前 GPU 机器保存的预测。本机 CPU 已真实重跑一次（n=60）：
+   触发词 **0.4370** / 论元 **0.1321** / 事件级 **0.0000**，**28.6 s/句**，
+   详见 `outputs/local_run/llm/metrics_local_zero_n60_cpu.json` 与实验报告 4.2。CPU 重跑与 GPU 参考的 60 条是独立抽样，只可看量级。
 4. **本地重训的 BERT 只跑 3 epoch / 800 句**，分数低于全量参考是预期内的，不用于结论排名。
 5. 报告里 PPT 的 CRF 延迟 40.92 ms 与项目实测 74.28 ms 不一致，已在正文注明；sample 表以实测为准。
 
@@ -291,7 +307,5 @@ src/outputs/logs/<run_name>_train.json    逐 epoch loss / 内层验证 F1
 - [x] 指标：`outputs/sample_subset.csv`、`outputs/metrics/sample_subset/`、`outputs/data_audit.json`
 - [x] 预测：`outputs/predictions/`（`disc/` 全量判别式、`llm/` 全量 LLM、`local/` 本地重训）
 - [x] 图表：`outputs/figures/` 7 张（对比、F1 递进、ΔF1、训练曲线等）
-- [x] F1 变化：`outputs/f1_changes.csv`、`outputs/f1_changes.md`
+- [x] 学习文档：`八斗学院/八斗精品班/第七周 抽取任务/week7_学习文档合集.md`（不提交 GitHub）
 - [x] 报告：`report/week7_信息抽取实验报告.docx`
-- [x] 数据体检：`report/data_audit.md`
-- [x] 选型指南：`report/model_selection.md`

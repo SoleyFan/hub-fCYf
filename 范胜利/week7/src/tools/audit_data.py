@@ -19,7 +19,7 @@
   python tools/audit_data.py --data_dir data/sample --full_dir data/processed
 产物：
   outputs/data_audit.json   机器可读
-  report/data_audit.md      人读（中文）
+  outputs/data_audit.json   机器可读（不再写 .md；学习类 md 在桌面合集）
 """
 
 import argparse
@@ -33,6 +33,7 @@ SRC = Path(__file__).resolve().parents[1]
 
 
 def load_jsonl(path: Path):
+    """读 JSONL；遇到坏行直接抛错并带上行号，避免“静默少几条”导致分母不对。"""
     rows = []
     with open(path, "r", encoding="utf-8") as f:
         for i, line in enumerate(f, 1):
@@ -47,6 +48,10 @@ def load_jsonl(path: Path):
 
 
 def span_ok(text: str, span: dict) -> bool:
+    """span 是否能在原文精确还原：0 <= start < end <= len(text) 且 text[start:end] == text。
+
+    这是字符级标注最核心的契约；offset 差一位，BIO 对齐、评测、可视化全错。
+    """
     if not isinstance(span, dict):
         return False
     s, e, t = span.get("start"), span.get("end"), span.get("text")
@@ -56,12 +61,22 @@ def span_ok(text: str, span: dict) -> bool:
 
 
 def tv_distance(c1: dict, c2: dict) -> float:
+    """两个类别分布的总变差距离（0=完全一致，1=完全不重叠）。
+
+    用来回答“sample 能不能代表全量”。<0.05 可认为代表性较好；
+    本项目 sample vs 全量 dev 约 0.053，所以报告里只把 sample 当排序/冒烟。
+    """
     keys = set(c1) | set(c2)
     n1, n2 = sum(c1.values()) or 1, sum(c2.values()) or 1
     return 0.5 * sum(abs(c1.get(k, 0) / n1 - c2.get(k, 0) / n2) for k in keys)
 
 
 def audit_extract(rows, schema, split):
+    """句级抽取集体检：类型/角色合法性、span 精确性、长度截断、多值角色、重叠。
+
+    `issues` 只放**真错误**（span 非法、未知类型/角色）；
+    “同一角色多值”是合法标注，单独统计，不混进 issues。
+    """
     types = collections.Counter()
     roles = collections.Counter()
     n_args = []
@@ -86,6 +101,8 @@ def audit_extract(rows, schema, split):
         n_args.append(len(args))
         if not args:
             issues["无任何论元"] += 1
+        # 同一事件允许同一角色多值（两个中标公司、两个减持方），这是 DuEE-Fin 的标注规范；
+        # 它会让 event_exact 更难，但不是数据错误，所以只统计不报错。
         role_count = collections.Counter(a.get("role") for a in args)
         if any(v > 1 for v in role_count.values()):
             multi_value_events += 1
@@ -96,6 +113,8 @@ def audit_extract(rows, schema, split):
             roles[role] += 1
             if isinstance(a.get("start"), int) and isinstance(a.get("end"), int):
                 spans.append((a["start"], a["end"]))
+        # 论元 span 互相重叠会让 BIO 投影产生“同一字符两个标签”的冲突；
+        # 这是金标自身非法 BIO 地板值（约 1.9%）的来源，必须如实统计。
         spans.sort()
         for (s1, e1), (s2, e2) in zip(spans, spans[1:]):
             if s2 < e1 and s1 != s2:
@@ -127,6 +146,7 @@ def audit_extract(rows, schema, split):
 
 
 def audit_detect(rows, schema, split):
+    """检测集体检：正负样本比例、has_event 与 n_events 自洽性、未知类型、长度。"""
     has = collections.Counter(bool(r.get("has_event")) for r in rows)
     n_events = collections.Counter(int(r.get("n_events", 0)) for r in rows)
     inconsistent = sum(
@@ -152,6 +172,11 @@ def audit_detect(rows, schema, split):
 
 
 def audit_docs(rows, schema, split):
+    """篇章集体检：事件数分布、多事件比例、每个事件的 span/角色合法性。
+
+    篇章集只用于系统层演示（一篇多事件），不参与句级 F1；
+    所以这里只报告问题，不把它当训练集。
+    """
     issues = collections.Counter()
     n_events = []
     for r in rows:
@@ -179,6 +204,11 @@ def audit_docs(rows, schema, split):
 
 
 def dup_analysis(rows, with_event: bool):
+    """重复分析：同 id、同文本、同 sent_id 三种。
+
+    注意：DuEE-Fin 的 `id` 是公告 id，同一篇公告多句共用 id 是**正常**的；
+    真正要关注的是“同文本重复”和“同文不同标”（标签冲突）。
+    """
     by_id = collections.defaultdict(list)
     by_text = collections.defaultdict(list)
     by_sent = collections.defaultdict(list)
@@ -217,6 +247,8 @@ def main():
     data_dir = Path(args.data_dir).expanduser()
     if not data_dir.is_absolute():
         data_dir = (Path.cwd() / data_dir).resolve()
+    if not data_dir.exists():
+        data_dir = ROOT / "data" / "sample"
     full_dir = Path(args.full_dir).expanduser() if args.full_dir else None
     if full_dir is not None and not full_dir.is_absolute():
         full_dir = (Path.cwd() / full_dir).resolve()
@@ -341,6 +373,11 @@ def main():
 
     # ── 6. Markdown 报告 ────────────────────────────────────────
     L = []
+    L.append("> **本文档主题：** sample 数据体检：文件用途、span/标签、重复/泄漏、长尾与 TV 距离\n")
+    L.append("> **初学者导读：** 先看第 1 节文件清单和第 7 节总结论；中间是检查明细。\n"
+             "> **怎么用：** 只关心“有没有阻断训练的硬伤”；长尾/截断/重复是写进实验假设的风险。\n"
+             "> **对应章节：** 初学者教程第 4 章「评测」\n"
+             "> **文档级别：** 📊 结果")
     L.append("# 数据体检报告（week7 抽取任务）\n")
     L.append(f"- 数据目录：`{data_dir}`")
     L.append(f"- Schema：**{report['schema']['types']} 类 / {report['schema']['slots']} 槽位 / "
@@ -445,12 +482,10 @@ def main():
     L.append("- **使用建议**：train/dev_extract 用于句级抽取主评测；detect 用于两段式检测器；"
              "dev_docs 用于篇章级事件流演示；sample 是冒烟子集，**不要拿它的指标直接对 PPT 全量数字**。")
 
-    out_md = ROOT / args.out_md
-    out_md.parent.mkdir(parents=True, exist_ok=True)
-    out_md.write_text("\n".join(L) + "\n", encoding="utf-8")
-
+    # 不写 .md：数据体检报告属于学习/分析类 Markdown，统一放桌面合集；
+    # JSON 仍是机器可读的权威结果。
     print(json.dumps({k: v for k, v in report.items() if k != "files"}, ensure_ascii=False, indent=2))
-    print(f"\n已写入：{out_json}\n已写入：{out_md}")
+    print(f"\n已写入：{out_json}")
 
 
 if __name__ == "__main__":

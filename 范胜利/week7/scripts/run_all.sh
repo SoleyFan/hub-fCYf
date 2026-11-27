@@ -11,6 +11,13 @@
 #   - LLM 链路需要 API Key 或本地 Qwen3-0.6B，未在脚本里自动跑，指标使用已保存预测复评。
 #
 #   BERT_PATH="/path/to/bert-base-chinese" bash scripts/run_all.sh
+#
+# 产物：
+#   src/outputs/            训练产物（规则/BiLSTM/BERT 的 metrics/pred/logs/ckpt）
+#   week7/outputs/          汇总表、图、数据体检
+#
+# 注意：本脚本只跑“能在 CPU 上合理完成”的规则/BiLSTM/BERT+Linear；
+# BERT+CRF（解码慢）、两段式（16 个模型）、LoRA（需 Qwen+GPU）请按 README 单独跑。
 
 set -euo pipefail
 
@@ -19,6 +26,18 @@ PYTHON="${PYTHON:-python3}"
 DATA_DIR="${DATA_DIR:-../data/sample}"
 FULL_DIR="${FULL_DIR:-}"
 BERT_PATH="${BERT_PATH:-}"
+
+# 预检：先确认解释器有 torch，再做任何训练。
+# 不做这一步的话，用户常用 `python`（base 环境）启动，跑到第一个 import 才报错，
+# 前面已经建了一半目录，看起来像“脚本坏了”。
+if ! "$PYTHON" -c "import torch" >/dev/null 2>&1; then
+  echo "错误：$PYTHON 没有 torch。请设置 PYTHON=/opt/anaconda3/envs/py312/bin/python"
+  exit 1
+fi
+if [[ -n "$BERT_PATH" && ! -d "$BERT_PATH" ]]; then
+  echo "警告：BERT_PATH 不存在，跳过 BERT+Linear：$BERT_PATH"
+  BERT_PATH=""
+fi
 
 echo "== 0. 数据体检 =="
 if [[ -n "$FULL_DIR" ]]; then

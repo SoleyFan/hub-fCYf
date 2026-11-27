@@ -17,6 +17,17 @@
   python eval/score_subset.py
 
 产物：只在终端打印；加 --json 输出机器可读 JSON。
+
+判读约定（很重要）：
+  - `ok`      = 结构合法：类型在 schema、触发词/论元 span 都能在原文还原、角色属于该类型。
+                它**不保证内容正确**，只保证“能安全地交给下游/人工复核”。
+  - `invalid` = 抽到了事件，但结构不合法（典型：角色串类型、span 对不上原文），不能直接入库。
+  - `empty`   = 没有输出事件；可能是句子本来无事件，也可能是触发词没命中/模型漏抽。
+  - `error`   = 运行/加载失败（路径、checkpoint、依赖），与模型能力无关。
+
+为什么不在这里直接算 F1：
+  单句的“对/错”是二值的，一句抽对不代表模型能力；F1 必须在 dev 300 句上按统一口径算。
+  本脚本只负责“能不能出结构”，批量指标请用 `eval/score_subset.py` 或训练结束时的 dev 评测。
 """
 
 import argparse
@@ -32,8 +43,7 @@ SRC = Path(__file__).resolve().parents[1]       # week7/src/
 sys.path.insert(0, str(SRC / "common"))
 
 from event_data import (BioDataset, collate_bio, decode_bio_spans, load_enums,
-                        load_extract_split, load_schema, make_pred_row,
-                        spans_to_event)
+                        load_extract_split, load_schema, spans_to_event)
 
 
 def load_module(name: str, path: Path):
@@ -46,7 +56,19 @@ def load_module(name: str, path: Path):
 # ─────────────────────────── 校验：结构是否合法 ───────────────────────────
 
 def validate(text: str, event: dict | None, schema: dict) -> tuple[list[dict], str]:
-    """返回逐项检查结果与总结论。"""
+    """对单条预测做“结构合法性”校验，返回 (逐项检查, 总结论)。
+
+    检查项与含义：
+      1. 事件类型在 schema 内：类型名必须是 13 类之一，否则下游无法路由；
+      2. 触发词 span 可在原文还原：要求 `text[start:end] == trigger.text`，
+         这是最容易被忽略的坑——模型可能返回原文没有的词（幻觉触发词）；
+      3. 论元角色属于该事件类型：例如“股份回购”不能出现“质押物占总股比”；
+      4. 论元 span 可在原文还原：同上，防止模型改写/拼接原文；
+      5. 至少一个论元：本数据集 dev 的事件最少也有 1 个论元，空论元通常意味着解码失败。
+
+    注意：**同一角色多值是合法的**（如两个「中标公司」），所以只提示、不算错；
+    event_exact 要求“集合完全一致”，多值会让 exact 更难，但不是结构错误。
+    """
     checks = []
 
     def add(name, ok, detail=""):
@@ -88,6 +110,13 @@ def validate(text: str, event: dict | None, schema: dict) -> tuple[list[dict], s
 # ─────────────────────────── 各方法单句推理 ───────────────────────────
 
 def infer_rule(text: str, data_dir: Path):
+    """规则基线：从 train 统计触发词/公司词典，再对单句做最长优先匹配。
+
+    为什么每次都重建词典：
+      规则没有 checkpoint，词典就是它的“模型参数”；单句探针只跑一两次，
+      重建 800 句的词典不到 0.1 秒，比额外维护一份词典文件更不容易过期。
+      触发词按长度降序匹配，避免「质押」抢走「解除质押」。
+    """
     rule = load_module("week7_rule", SRC / "rule" / "run_rule.py")
     schema = load_schema(data_dir / "event_schema.json")
     train_rows = load_extract_split("train", data_dir)
@@ -98,6 +127,14 @@ def infer_rule(text: str, data_dir: Path):
 
 
 def infer_bilstm(text: str, data_dir: Path, ckpt_path: Path):
+    """BiLSTM-CRF 单句推理。
+
+    checkpoint 里同时存了 `vocab`、`labels`、`args`，所以推理不依赖训练时的数据集：
+      - vocab：字 → id，未登录字用 <UNK>=1；
+      - labels：149 个 BIO 标签的 id→name 映射；
+      - args：emb_dim/hidden/num_layers/decoder 等结构参数，必须和训练时一致。
+    这里不补 PAD：单句本身就是 batch=1 的最长序列，mask 全 1。
+    """
     train_mod = load_module("week7_bilstm_train", SRC / "bilstm_crf" / "train.py")
     from crf import CRFClassifier
 
@@ -128,6 +165,14 @@ def infer_bilstm(text: str, data_dir: Path, ckpt_path: Path):
 
 
 def infer_bert(text: str, data_dir: Path, ckpt_path: Path, bert_path: str):
+    """BERT+Linear/CRF 单句推理。
+
+    两个容易踩的点：
+      1. 这里用 `BioDataset(..., with_labels=False)`：纯推理不需要金标，
+         但 dataset/collate 仍要生成 word_ids，才能把子词预测还原成字符级 BIO；
+      2. checkpoint 里的 `args.bert_path` 可能是训练机器的绝对路径，换机器会失效，
+         所以优先用命令行传入的 `--bert_path`。
+    """
     from transformers import BertTokenizerFast
     from models import build_model, predict_char_tags
 
@@ -172,6 +217,7 @@ def main():
     args = ap.parse_args()
 
     data_dir = Path(args.data_dir)
+    # schema 只加载一次；每个方法单独 try/except，保证一个模型加载失败不影响其它方法
     schema = load_schema(data_dir / "event_schema.json")
     results = []
 

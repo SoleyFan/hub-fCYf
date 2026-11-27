@@ -27,6 +27,10 @@ from pathlib import Path
 ROOT = Path(__file__).parent.parent
 COMMON_DIR = ROOT / "common"
 DATA_DIR = ROOT / "data" / "processed"
+if not DATA_DIR.exists():          # 交付包不带全量 processed 时退回 sample
+    _sample_dir = ROOT.parent / "data" / "sample"
+    if _sample_dir.exists():
+        DATA_DIR = _sample_dir
 PRED_DIR = ROOT / "outputs" / "disc"
 METRIC_DIR = ROOT / "outputs" / "metrics" / "disc"
 LOG_DIR = ROOT / "outputs" / "logs"

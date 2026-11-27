@@ -42,6 +42,13 @@ from torch.utils.data import Dataset
 
 ROOT = Path(__file__).parent.parent
 DATA_DIR = ROOT / "data" / "processed"
+# 交付包不带 27 MB 全量 processed：缺省目录不存在时自动退回 data/sample，
+# 这样 `python bert/train.py` 这类不带 --data_dir 的命令也能在交付包里直接跑。
+# 注意：这是“缺省值”的回退，不是把 sample 冒充全量；脚本启动时仍会打印实际数据目录。
+if not DATA_DIR.exists():
+    _sample_dir = ROOT.parent / "data" / "sample"
+    if _sample_dir.exists():
+        DATA_DIR = _sample_dir
 SCHEMA_PATH = DATA_DIR / "event_schema.json"
 
 # 「触发词」在 typed 标签体系里的固定名字：和角色名放在同一层，解码时靠它区分
@@ -494,8 +501,13 @@ class BioDataset(Dataset):
                 # [CLS] / [SEP] / [PAD]：不参与 loss
                 aligned.append(IGNORE_INDEX)
             elif wid != prev_wid:
-                # 该汉字的第一个子词：背上这个汉字的标签
-                aligned.append(char_labels[wid] if wid < len(char_labels) else IGNORE_INDEX)
+                # 该汉字的第一个子词：有标签就背上；纯推理（with_labels=False）统一 -100。
+                # 这个分支必须判空：probe_sentence 的 BERT 推理会传 with_labels=False，
+                # 以前这里直接 char_labels[wid] 会 TypeError。
+                if char_labels is None:
+                    aligned.append(IGNORE_INDEX)
+                else:
+                    aligned.append(char_labels[wid] if wid < len(char_labels) else IGNORE_INDEX)
                 prev_wid = wid
             else:
                 # 同一汉字的后续子词：设 -100。否则同一个 span 会被重复算好几遍 loss，
@@ -541,7 +553,9 @@ def collate_bio(batch: list[dict]) -> dict:
         n = int(b["input_ids"].numel())
         out["input_ids"][i, :n] = b["input_ids"]
         out["attention_mask"][i, :n] = b["attention_mask"]
-        out["labels"][i, :n] = b["labels"]
+        # 纯推理的 dataset 不带 labels：整行保持 IGNORE_INDEX，训练分支照常覆盖。
+        if "labels" in b:
+            out["labels"][i, :n] = b["labels"]
         out["word_ids"][i, :n] = b["word_ids"]
         if "token_type_ids" in b:
             out["token_type_ids"][i, :n] = b["token_type_ids"]

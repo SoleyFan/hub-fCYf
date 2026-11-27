@@ -38,7 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))  # llm_lora 自己的 m
 
 from log_utils import EvalLogger  # noqa: E402
 from event_data import (  # noqa: E402
-    OUTPUT_LLM_DIR, ROOT, SEED, load_jsonl, load_schema, make_pred_row,
+    DATA_DIR, OUTPUT_LLM_DIR, ROOT, SEED, load_jsonl, load_schema, make_pred_row,
     sample_rows, write_eval_ids, write_gold_subset,
 )
 from event_prompt import build_messages, parse_model_output  # noqa: E402
@@ -79,8 +79,12 @@ def load_model(model_path: str, ckpt_dir: str, dtype: torch.dtype, device: torch
         if tokenizer.pad_token_id is None:
             tokenizer.pad_token_id = tokenizer.eos_token_id
         tokenizer.padding_side = "left"   # 批量生成必须左 padding（见 local_generate.py 说明）
-        base = AutoModelForCausalLM.from_pretrained(
-            model_path, dtype=dtype, trust_remote_code=True)
+        try:
+            base = AutoModelForCausalLM.from_pretrained(
+                model_path, dtype=dtype, trust_remote_code=True)
+        except TypeError:
+            base = AutoModelForCausalLM.from_pretrained(
+                model_path, torch_dtype=dtype, trust_remote_code=True)
         model = PeftModel.from_pretrained(base, str(ckpt_path)).merge_and_unload()
         ckpt_type = "lora"
     else:
@@ -89,8 +93,12 @@ def load_model(model_path: str, ckpt_dir: str, dtype: torch.dtype, device: torch
         if tokenizer.pad_token_id is None:
             tokenizer.pad_token_id = tokenizer.eos_token_id
         tokenizer.padding_side = "left"
-        model = AutoModelForCausalLM.from_pretrained(
-            str(ckpt_path), dtype=dtype, trust_remote_code=True)
+        try:
+            model = AutoModelForCausalLM.from_pretrained(
+                str(ckpt_path), dtype=dtype, trust_remote_code=True)
+        except TypeError:
+            model = AutoModelForCausalLM.from_pretrained(
+                str(ckpt_path), torch_dtype=dtype, trust_remote_code=True)
         ckpt_type = "full_ft"
 
     model = model.to(device).eval()
@@ -134,7 +142,7 @@ def print_compare_table(skip_keywords=("probe", "smoke", "mock", "dry")):
 
 def parse_args():
     p = argparse.ArgumentParser(description="SFT checkpoint 事件抽取评估")
-    p.add_argument("--model_path", default=str(resolve_model_path(QWEN_MODEL_DIR)))
+    p.add_argument("--model_path", default="", help="默认自动找 pretrain_models/Qwen3-0.6B")
     p.add_argument("--ckpt_dir", default=str(DEFAULT_CKPT))
     p.add_argument("--data", default=None, help="金标 JSONL（默认 dev_extract.jsonl）")
     p.add_argument("--n", default=200, type=int, help="评测样本数（默认 200，与 API 实验同批）")
@@ -149,6 +157,9 @@ def parse_args():
 
 def main():
     args = parse_args()
+    # 延迟解析：没有 Qwen 权重时 --help 仍然可用；真正加载时再给人话报错。
+    if not args.model_path:
+        args.model_path = str(resolve_model_path(QWEN_MODEL_DIR))
     # 纯评测方法用 EvalLogger：写 outputs/logs/llm_lora_eval_eval.json + _console.log
     eval_logger = EvalLogger(method="llm_lora_eval", args=args, root=ROOT,
                              notes="LoRA SFT 模型评测（生成式链路）")
@@ -156,8 +167,9 @@ def main():
     torch_dtype = resolve_torch_dtype(device, args.dtype)
     print(f"设备: {device}（dtype={torch_dtype}）")
 
+    # schema 与金标都走 common 的 sample 回退（交付包不带 processed）。
     schema = load_schema()
-    gold_in = Path(args.data) if args.data else (ROOT / "data" / "processed" / "dev_extract.jsonl")
+    gold_in = Path(args.data) if args.data else (DATA_DIR / "dev_extract.jsonl")
     all_rows = [json.loads(line) for line in open(gold_in, encoding="utf-8") if line.strip()]
     rows = sample_rows(all_rows, args.n, args.seed)
 

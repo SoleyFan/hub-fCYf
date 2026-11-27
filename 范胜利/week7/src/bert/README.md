@@ -1,3 +1,10 @@
+> **本文档主题：** BERT+Linear/CRF 方法的原理、命令、产物与指标说明
+
+> **初学者导读：** 先读 IMPLEMENTATION 第 6/7 节（BERT+Linear/CRF），再回来查参数。
+> **怎么用：** 重点看 word_ids 对齐和 CRF。
+> **对应章节：** 初学者教程第 6 章「BiLSTM/BERT」+ 第 7 章「CRF/硬约束」
+> **文档级别：** 🔍 查阅
+
 # bert/ —— L2 BERT 序列标注（一次联合抽取）
 
 **一句话**：`bert-base-chinese` + 序列标注，**一次前向同时抽「事件类型 + 触发词 + 论元」**。

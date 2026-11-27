@@ -1,7 +1,14 @@
 # -*- coding: utf-8 -*-
-"""生成 week7 交付报告 DOCX（所有数字从落盘指标读取，不手填）。
+"""生成 week7 交付报告 DOCX。
 
-运行（使用 Office 运行时自带的 python）：
+数据来源分两类，不要混：
+  1. 可自动读取的：数据体检 `outputs/data_audit.json`、sample 复评 `outputs/sample_subset.csv`、
+     本地重训 `outputs/local_run/metrics_*.json`；
+  2. **PPT 全量参考表**：`full` 字典里的 930 句指标/训练成本/延迟是按课程 PPT 复现的，
+     刻意硬编码（含人工整理的成本列），不随 reference/metrics 自动漂移。
+     改这些数字时必须同步 `f1_changes.py` 的一致性检查，否则报告与指标会打架。
+
+运行（使用 Office 运行时自带的 python，需 python-docx）：
   <office-python> report/build_report.py
 """
 
@@ -271,6 +278,10 @@ def build():
 
     audit = load_json(OUT / "data_audit.json")
     sample = read_csv(OUT / "sample_subset.csv")
+    # 课程 PPT 全量 dev 930 的参考表（表 4-1）。
+    # 元组：显示名、trigger F1、argument F1、event F1、训练/成本、延迟。
+    # 这些 F1 与 reference/metrics 一致；延迟列按 PPT 口径（CRF 40.92ms 与项目实测
+    # 74.28ms 不一致，正文已注明）。不要在未更新出处的情况下改这里的数。
     full = {
         "rule": ("L0 规则（词典+正则）", 0.6168, 0.1740, 0.0161, "0（纯 CPU）", "0.72 ms"),
         "bilstm_crf": ("L1 字符级 BiLSTM-CRF", 0.8165, 0.4634, 0.0885, "1,540 s（CPU 3 epoch）", "21.17 ms"),
@@ -474,6 +485,11 @@ def build():
               widths=[8.6, 1.4, 2.1, 2.1, 2.1], font_size=8.3, align_left_cols=(0,),
               highlight_rows=(len(rows) - 1,))
     add_caption(doc, "表 4-2  sample n=200 同批复评（本地 0.6B 为 n=60；按论元 F1 升序）")
+
+    add_para(doc, "补充：本次还在本机 CPU 上真实重跑了本地 Qwen3-0.6B zero-shot（n=60，独立抽样，"
+                  "不是上表同一批句子）：触发词 0.4370 / 论元 0.1321 / 事件级 0.0000，"
+                  "28.6 s/句，JSON 合法率 100%。与 GPU 参考（0.4068 / 0.1167 / 0）同一量级，"
+                  "差异来自抽样不同与 fp32/bf16 精度，不改变“0.6B zero-shot 只能出结构、内容很弱”的结论。")
 
     add_figure(doc, FIG / "fig_compare_sample.png", 16.2,
                "图 4-1  sample n=200：触发词、论元、事件级三级 F1")

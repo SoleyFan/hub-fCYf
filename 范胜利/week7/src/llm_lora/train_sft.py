@@ -54,7 +54,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))  # llm_lora 自己的 m
 
 from log_utils import TrainLogger, peak_gpu_mb  # noqa: E402
 from event_data import (  # noqa: E402
-    ROOT, SEED, canonical_order, load_jsonl, load_schema, to_target_json,
+    DATA_DIR, ROOT, SEED, canonical_order, load_jsonl, load_schema, to_target_json,
 )
 from event_prompt import build_system_prompt  # noqa: E402
 from model_paths import QWEN_MODEL_DIR, resolve_model_path  # noqa: E402
@@ -65,7 +65,6 @@ try:
 except ImportError:      # 全量微调模式下不需要 peft
     PEFT_AVAILABLE = False
 
-DATA_DIR   = ROOT / "data" / "processed"
 OUTPUT_DIR = ROOT / "outputs" / "llm" / "ckpt"
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -200,7 +199,7 @@ def compute_lm_loss(model, input_ids, attention_mask, labels):
 
 def parse_args():
     p = argparse.ArgumentParser(description="事件抽取 LLM SFT 训练（LoRA / 全量微调）")
-    p.add_argument("--model_path", default=str(resolve_model_path(QWEN_MODEL_DIR)))
+    p.add_argument("--model_path", default="", help="默认自动找 pretrain_models/Qwen3-0.6B")
     p.add_argument("--data_dir", default=str(DATA_DIR))
     p.add_argument("--output_dir", default=str(OUTPUT_DIR))
     p.add_argument("--num_train", default=-1, type=int, help="-1 = 用全部 5747 条")
@@ -234,6 +233,10 @@ def parse_args():
 
 def main():
     args = parse_args()
+    # --model_path 默认是空串：只有真正要训练时才解析 Qwen 路径，
+    # 这样没下载权重时 `--help`、`--dry_run` 也不会被 FileNotFoundError 挡住。
+    if not args.model_path:
+        args.model_path = str(resolve_model_path(QWEN_MODEL_DIR))
     random.seed(args.seed)
     torch.manual_seed(args.seed)
     if args.lr is None:
@@ -247,6 +250,8 @@ def main():
     print(f"设备: {device} | 模式: {'全量微调' if args.full_ft else 'LoRA'}")
 
     # ── 数据：train 里留出 val（绝不拿 dev 选模型）────────────────────────────
+    # 为什么不用 dev 选 epoch：dev 是最终评测集，拿它调超参等于把答案泄进模型；
+    # 这里从 train 末尾留 val_size 条（canonical_order 固定 seed，可复现）。
     rows = load_jsonl(data_dir / "train_extract.jsonl")
     ordered = canonical_order(rows, args.seed)     # 固定 seed，可复现
     n_val = min(args.val_size, len(ordered) // 20)
@@ -255,6 +260,7 @@ def main():
         train_rows = train_rows[: args.num_train]
     print(f"训练 {len(train_rows)} 条 | 验证(取自 train 尾部) {len(val_rows)} 条")
 
+    # schema 走 common 的缺省回退：交付包没有 processed 时自动用 data/sample。
     schema = load_schema()
     system_prompt = build_system_prompt(schema)
 
@@ -266,9 +272,14 @@ def main():
     torch_dtype = {"auto": torch.bfloat16 if device.type == "cuda" else torch.float32,
                    "bf16": torch.bfloat16, "fp32": torch.float32}[args.dtype]
     print(f"加载基座: {args.model_path}（dtype={torch_dtype}）")
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model_path, dtype=torch_dtype, trust_remote_code=True,
-    )
+    try:
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model_path, dtype=torch_dtype, trust_remote_code=True,
+        )
+    except TypeError:
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model_path, torch_dtype=torch_dtype, trust_remote_code=True,
+        )
     model.config.use_cache = False   # 训练时不需要 KV cache，关掉省显存
 
     train_ds = EventSFTDataset(train_rows, tokenizer, system_prompt, args.max_length)

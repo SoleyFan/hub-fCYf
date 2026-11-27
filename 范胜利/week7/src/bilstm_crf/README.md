@@ -1,3 +1,10 @@
+> **本文档主题：** BiLSTM-CRF 基线的原理、命令、产物与对比意义
+
+> **初学者导读：** 先读 IMPLEMENTATION 第 5 节（BiLSTM-CRF），再回来查命令。
+> **怎么用：** 重点理解字符级、动态 padding、warmup。
+> **对应章节：** 初学者教程第 6 章「BiLSTM/BERT」
+> **文档级别：** 🔍 查阅
+
 # bilstm_crf/ —— L1 字符级 BiLSTM-CRF（无预训练）
 
 **一句话**：字向量 128 → BiLSTM(hidden 256×2) → Linear → **手写 CRF**，从零训练，参数量约 **1.31M**。
